@@ -1,0 +1,50 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: rategate-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: ratelimiter
+      TZ: Asia/Shanghai
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    ports:
+      # 映射到宿主 3307，避免与宿主已安装的 MySQL(3306) 冲突
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # MySQL 官方镜像首次启动时会自动执行该目录下的 .sql 文件
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - rategate-net
+
+  app:
+    build: .
+    container_name: rategate-app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: ratelimiter
+      TZ: Asia/Shanghai
+    ports:
+      - "8888:8888"
+    networks:
+      - rategate-net
+
+volumes:
+  mysql_data:
+
+networks:
+  rategate-net:
+    driver: bridge

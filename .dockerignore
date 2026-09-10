@@ -1,0 +1,33 @@
+# 版本控制
+.git
+.gitignore
+.claudeignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# 无关模板脚本
+benzhi.Dockerfile
+build_benzhi_docker.sh
+run_docker.sh
+end_docker.sh
+branch.sh
+commit.sh
+empty.sh
+
+# 其他
+*.md
+server
+*.exe
+*.test
+*.prof
+node_modules

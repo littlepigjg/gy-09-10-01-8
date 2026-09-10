@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>API网关限流熔断控制台</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0f1117;--card:#1a1d27;--card-hover:#222633;--border:#2a2e3d;--text:#e4e6eb;--text-dim:#8b8fa3;--accent:#6366f1;--accent-light:#818cf8;--green:#10b981;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;--purple:#8b5cf6;--cyan:#06b6d4}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
+.header{background:linear-gradient(135deg,#1e1b4b 0%,#312e81 100%);padding:20px 32px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)}
+.header h1{font-size:22px;font-weight:700;letter-spacing:0.5px}
+.header h1 span{color:var(--accent-light);font-weight:800}
+.header-right{display:flex;align-items:center;gap:16px}
+.status-dot{width:10px;height:10px;border-radius:50%;background:var(--green);display:inline-block;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.header-right span{font-size:13px;color:var(--text-dim)}
+
+.container{max-width:1440px;margin:0 auto;padding:24px}
+
+/* 统计卡片 */
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;overflow:hidden;transition:transform .2s}
+.stat-card:hover{transform:translateY(-2px)}
+.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
+.stat-card:nth-child(1)::before{background:var(--blue)}
+.stat-card:nth-child(2)::before{background:var(--green)}
+.stat-card:nth-child(3)::before{background:var(--red)}
+.stat-card:nth-child(4)::before{background:var(--orange)}
+.stat-label{font-size:13px;color:var(--text-dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
+.stat-value{font-size:32px;font-weight:700}
+.stat-card:nth-child(1) .stat-value{color:var(--blue)}
+.stat-card:nth-child(2) .stat-value{color:var(--green)}
+.stat-card:nth-child(3) .stat-value{color:var(--red)}
+.stat-card:nth-child(4) .stat-value{color:var(--orange)}
+.stat-sub{font-size:12px;color:var(--text-dim);margin-top:4px}
+
+/* 面板 */
+.panel-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px}
+.panel-grid.full{grid-template-columns:1fr}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.panel-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.panel-header h3{font-size:15px;font-weight:600}
+.panel-body{padding:20px}
+
+/* 图表 */
+.chart-container{height:280px;position:relative}
+
+/* 表格 */
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:10px 12px;font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);font-weight:600}
+td{padding:10px 12px;font-size:13px;border-bottom:1px solid rgba(42,46,61,.5)}
+tr:hover{background:var(--card-hover)}
+.badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.badge-green{background:rgba(16,185,129,.15);color:var(--green)}
+.badge-red{background:rgba(239,68,68,.15);color:var(--red)}
+.badge-orange{background:rgba(245,158,11,.15);color:var(--orange)}
+.badge-blue{background:rgba(59,130,246,.15);color:var(--blue)}
+.badge-purple{background:rgba(139,92,246,.15);color:var(--purple)}
+.badge-cyan{background:rgba(6,182,212,.15);color:var(--cyan)}
+
+/* 熔断器卡片 */
+.cb-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.cb-card{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px}
+.cb-card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.cb-card-header h4{font-size:14px;font-weight:600}
+.cb-info{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.cb-info-item{font-size:12px;color:var(--text-dim)}
+.cb-info-item span{color:var(--text);font-weight:500}
+.cb-actions{display:flex;gap:8px;margin-top:12px}
+
+/* 按钮 */
+.btn{padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:12px;cursor:pointer;transition:all .2s;font-weight:500}
+.btn:hover{background:var(--card-hover);border-color:var(--accent)}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent-light)}
+.btn-danger{background:var(--red);border-color:var(--red);color:#fff}
+.btn-danger:hover{opacity:.8}
+.btn-success{background:var(--green);border-color:var(--green);color:#fff}
+.btn-success:hover{opacity:.8}
+.btn-sm{padding:4px 10px;font-size:11px}
+
+/* 模态框 */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center}
+.modal-overlay.active{display:flex}
+.modal{background:var(--card);border:1px solid var(--border);border-radius:16px;width:500px;max-width:90vw;max-height:85vh;overflow-y:auto}
+.modal-header{padding:20px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.modal-header h3{font-size:16px}
+.modal-close{background:none;border:none;color:var(--text-dim);font-size:20px;cursor:pointer;padding:4px}
+.modal-close:hover{color:var(--text)}
+.modal-body{padding:24px}
+.form-group{margin-bottom:16px}
+.form-group label{display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;font-weight:500}
+.form-group input,.form-group select{width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;outline:none;transition:border-color .2s}
+.form-group input:focus,.form-group select:focus{border-color:var(--accent)}
+.modal-footer{padding:16px 24px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+
+/* 事件列表 */
+.event-list{max-height:400px;overflow-y:auto}
+.event-item{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid rgba(42,46,61,.4)}
+.event-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.event-dot.allowed{background:var(--green)}
+.event-dot.rejected{background:var(--red)}
+.event-content{flex:1;min-width:0}
+.event-path{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.event-meta{font-size:11px;color:var(--text-dim);margin-top:2px}
+.event-time{font-size:11px;color:var(--text-dim);white-space:nowrap}
+
+/* 无数据 */
+.empty{text-align:center;padding:40px;color:var(--text-dim);font-size:14px}
+
+/* 滚动条 */
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:#3a3e4d}
+
+@media(max-width:1024px){.stats-grid{grid-template-columns:repeat(2,1fr)}.panel-grid{grid-template-columns:1fr}}
+@media(max-width:640px){.stats-grid{grid-template-columns:1fr}.container{padding:12px}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span>API</span> 网关限流熔断控制台</h1>
+  <div class="header-right">
+    <span><span class="status-dot"></span> 运行中</span>
+    <span id="clock"></span>
+  </div>
+</div>
+
+<div class="container">
+  <!-- 统计卡片 -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-label">总请求数</div>
+      <div class="stat-value" id="stat-total">0</div>
+      <div class="stat-sub">自服务启动以来</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">通过请求</div>
+      <div class="stat-value" id="stat-allowed">0</div>
+      <div class="stat-sub" id="stat-allowed-rate">通过率 100%</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">限流拒绝</div>
+      <div class="stat-value" id="stat-rejected">0</div>
+      <div class="stat-sub" id="stat-rejected-rate">拒绝率 0%</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">熔断次数</div>
+      <div class="stat-value" id="stat-cb-trips">0</div>
+      <div class="stat-sub">服务保护触发</div>
+    </div>
+  </div>
+
+  <!-- 流量趋势图 -->
+  <div class="panel-grid full" style="margin-bottom:24px">
+    <div class="panel">
+      <div class="panel-header">
+        <h3>实时流量趋势</h3>
+        <span style="font-size:12px;color:var(--text-dim)">每10秒更新</span>
+      </div>
+      <div class="panel-body">
+        <div class="chart-container"><canvas id="trafficChart"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel-grid">
+    <!-- 限流规则 -->
+    <div class="panel">
+      <div class="panel-header">
+        <h3>限流规则管理</h3>
+        <button class="btn btn-primary btn-sm" onclick="openRuleModal()">+ 新建规则</button>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>路径</th><th>算法</th><th>速率</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody id="rules-table"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 限流事件 -->
+    <div class="panel">
+      <div class="panel-header">
+        <h3>限流事件日志</h3>
+        <span style="font-size:12px;color:var(--text-dim)" id="event-count">0 条</span>
+      </div>
+      <div class="panel-body" style="padding:12px 20px">
+        <div class="event-list" id="event-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 熔断器状态 -->
+  <div class="panel-grid full">
+    <div class="panel">
+      <div class="panel-header">
+        <h3>熔断器状态监控</h3>
+        <button class="btn btn-primary btn-sm" onclick="openCBModal()">+ 添加服务</button>
+      </div>
+      <div class="panel-body">
+        <div class="cb-grid" id="cb-grid"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 新建规则模态框 -->
+<div class="modal-overlay" id="rule-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="rule-modal-title">新建限流规则</h3>
+      <button class="modal-close" onclick="closeRuleModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>请求路径</label>
+        <input id="rule-path" placeholder="例: /api/users/*">
+      </div>
+      <div class="form-group">
+        <label>HTTP方法</label>
+        <select id="rule-method">
+          <option value="ALL">ALL</option>
+          <option value="GET">GET</option>
+          <option value="POST">POST</option>
+          <option value="PUT">PUT</option>
+          <option value="DELETE">DELETE</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>限流算法</label>
+        <select id="rule-algorithm">
+          <option value="token_bucket">令牌桶 (Token Bucket)</option>
+          <option value="sliding_window">滑动窗口 (Sliding Window)</option>
+          <option value="fixed_window">固定窗口 (Fixed Window)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>速率 (每秒请求数)</label>
+        <input id="rule-rate" type="number" value="100" min="1">
+      </div>
+      <div class="form-group">
+        <label>突发容量</label>
+        <input id="rule-burst" type="number" value="200" min="1">
+      </div>
+      <div class="form-group">
+        <label>窗口大小 (秒，仅滑动/固定窗口)</label>
+        <input id="rule-window" type="number" value="60" min="1">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeRuleModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveRule()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 熔断器模态框 -->
+<div class="modal-overlay" id="cb-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="cb-modal-title">添加熔断器</h3>
+      <button class="modal-close" onclick="closeCBModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>服务名称</label>
+        <input id="cb-service" placeholder="例: user-service">
+      </div>
+      <div class="form-group">
+        <label>后端地址</label>
+        <input id="cb-url" placeholder="例: http://localhost:8081">
+      </div>
+      <div class="form-group">
+        <label>失败阈值</label>
+        <input id="cb-threshold" type="number" value="5" min="1">
+      </div>
+      <div class="form-group">
+        <label>恢复超时 (秒)</label>
+        <input id="cb-timeout" type="number" value="30" min="1">
+      </div>
+      <div class="form-group">
+        <label>半开最大试探数</label>
+        <input id="cb-maxcalls" type="number" value="3" min="1">
+      </div>
+      <div class="form-group">
+        <label>恢复成功阈值</label>
+        <input id="cb-succ-threshold" type="number" value="2" min="1">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeCBModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveCB()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let trafficChart = null;
+let editingRuleId = null;
+let refreshTimer = null;
+
+// 时钟
+function updateClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleString('zh-CN');
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// 初始化图表
+function initChart() {
+  const ctx = document.getElementById('trafficChart').getContext('2d');
+  trafficChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        { label: '总请求', data: [], borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.1)', fill: true, tension: 0.4, pointRadius: 2 },
+        { label: '通过', data: [], borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,.1)', fill: true, tension: 0.4, pointRadius: 2 },
+        { label: '拒绝', data: [], borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,.1)', fill: true, tension: 0.4, pointRadius: 2 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#8b8fa3', font: { size: 12 } } } },
+      scales: {
+        x: { grid: { color: 'rgba(42,46,61,.5)' }, ticks: { color: '#8b8fa3', font: { size: 10 }, maxRotation: 0 } },
+        y: { grid: { color: 'rgba(42,46,61,.5)' }, ticks: { color: '#8b8fa3', font: { size: 10 } }, beginAtZero: true }
+      },
+      interaction: { mode: 'index', intersect: false }
+    }
+  });
+}
+
+// 格式化时间
+function fmtTime(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('zh-CN');
+}
+
+// 状态徽章
+function stateBadge(state) {
+  const map = {
+    closed: ['正常', 'badge-green'],
+    open: ['熔断', 'badge-red'],
+    half_open: ['半开', 'badge-orange'],
+  };
+  const [label, cls] = map[state] || ['未知', 'badge-blue'];
+  return `<span class="badge ${cls}">${label}</span>`;
+}
+
+// 算法徽章
+function algoBadge(algo) {
+  const map = {
+    token_bucket: ['令牌桶', 'badge-cyan'],
+    sliding_window: ['滑动窗口', 'badge-purple'],
+    fixed_window: ['固定窗口', 'badge-blue'],
+  };
+  const [label, cls] = map[algo] || [algo, 'badge-blue'];
+  return `<span class="badge ${cls}">${label}</span>`;
+}
+
+// 获取数据
+async function fetchDashboard() {
+  try {
+    const res = await fetch(`${API}/api/dashboard`);
+    const data = await res.json();
+    updateStats(data.stats, data.circuit_breakers);
+    updateRules(data.rules);
+    updateEvents(data.recent_events);
+    updateCircuitBreakers(data.circuit_breakers);
+    updateChart(data.traffic_history);
+  } catch (e) {
+    console.error('获取数据失败:', e);
+  }
+}
+
+function updateStats(stats, cbs) {
+  document.getElementById('stat-total').textContent = stats.total_requests.toLocaleString();
+  document.getElementById('stat-allowed').textContent = stats.allowed_requests.toLocaleString();
+  document.getElementById('stat-rejected').textContent = stats.rejected_requests.toLocaleString();
+
+  const total = stats.total_requests || 1;
+  document.getElementById('stat-allowed-rate').textContent = `通过率 ${(stats.allowed_requests / total * 100).toFixed(1)}%`;
+  document.getElementById('stat-rejected-rate').textContent = `拒绝率 ${(stats.rejected_requests / total * 100).toFixed(1)}%`;
+
+  const cbTrips = cbs.reduce((sum, cb) => sum + (cb.state === 'open' ? 1 : 0), 0);
+  document.getElementById('stat-cb-trips').textContent = cbTrips;
+}
+
+function updateRules(rules) {
+  const tbody = document.getElementById('rules-table');
+  if (!rules.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无限流规则</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rules.map(r => `
+    <tr>
+      <td><code style="font-size:12px;color:var(--cyan)">${r.path}</code><br><span style="font-size:11px;color:var(--text-dim)">${r.method}</span></td>
+      <td>${algoBadge(r.algorithm)}</td>
+      <td><strong>${r.rate}</strong>/s<br><span style="font-size:11px;color:var(--text-dim)">突发: ${r.burst}</span></td>
+      <td><span class="badge badge-green">启用</span></td>
+      <td>
+        <button class="btn btn-sm" onclick="editRule(${r.id}, '${r.path}', '${r.method}', '${r.algorithm}', ${r.rate}, ${r.burst}, ${r.window_size || 60})">编辑</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteRule(${r.id})">删除</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function updateEvents(events) {
+  document.getElementById('event-count').textContent = `${events.length} 条`;
+  const list = document.getElementById('event-list');
+  if (!events.length) {
+    list.innerHTML = '<div class="empty">暂无事件</div>';
+    return;
+  }
+  list.innerHTML = events.map(e => `
+    <div class="event-item">
+      <div class="event-dot ${e.allowed ? 'allowed' : 'rejected'}"></div>
+      <div class="event-content">
+        <div class="event-path">${e.path} <span class="badge ${e.allowed ? 'badge-green' : 'badge-red'}" style="margin-left:6px">${e.allowed ? '通过' : '拒绝'}</span></div>
+        <div class="event-meta">${e.client_ip || '-'} | ${algoBadge(e.algorithm)} | ${e.reason || ''}</div>
+      </div>
+      <div class="event-time">${fmtTime(e.created_at)}</div>
+    </div>
+  `).join('');
+}
+
+function updateCircuitBreakers(cbs) {
+  const grid = document.getElementById('cb-grid');
+  if (!cbs.length) {
+    grid.innerHTML = '<div class="empty">暂无熔断器配置</div>';
+    return;
+  }
+  grid.innerHTML = cbs.map(cb => `
+    <div class="cb-card">
+      <div class="cb-card-header">
+        <h4>${cb.service_name}</h4>
+        ${stateBadge(cb.state)}
+      </div>
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">${cb.backend_url}</div>
+      <div class="cb-info">
+        <div class="cb-info-item">失败计数: <span>${cb.failure_count}/${cb.failure_threshold}</span></div>
+        <div class="cb-info-item">总请求: <span>${cb.total_requests}</span></div>
+        <div class="cb-info-item">总失败: <span>${cb.total_failures}</span></div>
+        <div class="cb-info-item">恢复超时: <span>${cb.recovery_timeout}s</span></div>
+        <div class="cb-info-item">半开试探: <span>${cb.half_open_calls}/${cb.half_open_max_calls}</span></div>
+        <div class="cb-info-item">恢复阈值: <span>${cb.success_threshold}</span></div>
+        ${cb.last_failure_time ? `<div class="cb-info-item">最近失败: <span>${fmtTime(cb.last_failure_time)}</span></div>` : ''}
+        <div class="cb-info-item">状态变更: <span>${fmtTime(cb.last_state_change)}</span></div>
+      </div>
+      <div class="cb-actions">
+        <button class="btn btn-success btn-sm" onclick="resetCB('${cb.service_name}')">重置为正常</button>
+        <button class="btn btn-sm" onclick="editCB('${cb.service_name}', ${cb.failure_threshold}, ${cb.recovery_timeout}, ${cb.half_open_max_calls}, ${cb.success_threshold})">配置</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteCB('${cb.service_name}')">删除</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function updateChart(history) {
+  if (!trafficChart || !history || !history.length) return;
+  const labels = history.map(h => {
+    const d = new Date(h.timestamp);
+    return d.toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  });
+  trafficChart.data.labels = labels;
+  trafficChart.data.datasets[0].data = history.map(h => h.total);
+  trafficChart.data.datasets[1].data = history.map(h => h.allowed);
+  trafficChart.data.datasets[2].data = history.map(h => h.rejected);
+  trafficChart.update('none');
+}
+
+// 规则操作
+function openRuleModal(editing = false) {
+  document.getElementById('rule-modal-title').textContent = editing ? '编辑限流规则' : '新建限流规则';
+  document.getElementById('rule-modal').classList.add('active');
+}
+function closeRuleModal() {
+  document.getElementById('rule-modal').classList.remove('active');
+  editingRuleId = null;
+  document.getElementById('rule-path').value = '';
+  document.getElementById('rule-rate').value = 100;
+  document.getElementById('rule-burst').value = 200;
+  document.getElementById('rule-window').value = 60;
+}
+function editRule(id, path, method, algo, rate, burst, window) {
+  editingRuleId = id;
+  document.getElementById('rule-path').value = path;
+  document.getElementById('rule-method').value = method;
+  document.getElementById('rule-algorithm').value = algo;
+  document.getElementById('rule-rate').value = rate;
+  document.getElementById('rule-burst').value = burst;
+  document.getElementById('rule-window').value = window;
+  openRuleModal(true);
+}
+async function saveRule() {
+  const data = {
+    path: document.getElementById('rule-path').value,
+    method: document.getElementById('rule-method').value,
+    algorithm: document.getElementById('rule-algorithm').value,
+    rate: parseFloat(document.getElementById('rule-rate').value),
+    burst: parseInt(document.getElementById('rule-burst').value),
+    window_size: parseInt(document.getElementById('rule-window').value),
+  };
+  if (!data.path) { alert('请输入路径'); return; }
+
+  const url = editingRuleId ? `${API}/api/rules/${editingRuleId}` : `${API}/api/rules`;
+  const method = editingRuleId ? 'PUT' : 'POST';
+  await fetch(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  closeRuleModal();
+  fetchDashboard();
+}
+async function deleteRule(id) {
+  if (!confirm('确定删除此规则？')) return;
+  await fetch(`${API}/api/rules/${id}`, { method: 'DELETE' });
+  fetchDashboard();
+}
+
+// 熔断器操作
+function openCBModal() {
+  document.getElementById('cb-modal-title').textContent = '添加熔断器';
+  document.getElementById('cb-modal').classList.add('active');
+}
+function closeCBModal() {
+  document.getElementById('cb-modal').classList.remove('active');
+  document.getElementById('cb-service').value = '';
+  document.getElementById('cb-url').value = '';
+  document.getElementById('cb-threshold').value = 5;
+  document.getElementById('cb-timeout').value = 30;
+  document.getElementById('cb-maxcalls').value = 3;
+  document.getElementById('cb-succ-threshold').value = 2;
+}
+async function saveCB() {
+  const data = {
+    service_name: document.getElementById('cb-service').value,
+    backend_url: document.getElementById('cb-url').value,
+    failure_threshold: parseInt(document.getElementById('cb-threshold').value),
+    recovery_timeout: parseInt(document.getElementById('cb-timeout').value),
+    half_open_max_calls: parseInt(document.getElementById('cb-maxcalls').value),
+    success_threshold: parseInt(document.getElementById('cb-succ-threshold').value),
+  };
+  if (!data.service_name || !data.backend_url) { alert('请填写服务名称和地址'); return; }
+
+  await fetch(`${API}/api/circuit-breakers`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  closeCBModal();
+  fetchDashboard();
+}
+function editCB(name, threshold, timeout, maxcalls, succ) {
+  document.getElementById('cb-service').value = name;
+  document.getElementById('cb-url').value = '';
+  document.getElementById('cb-threshold').value = threshold;
+  document.getElementById('cb-timeout').value = timeout;
+  document.getElementById('cb-maxcalls').value = maxcalls;
+  document.getElementById('cb-succ-threshold').value = succ;
+  document.getElementById('cb-modal').classList.add('active');
+}
+async function resetCB(name) {
+  if (!confirm(`确定重置熔断器 ${name} 为正常状态？`)) return;
+  await fetch(`${API}/api/circuit-breakers/${name}/reset`, { method: 'POST' });
+  fetchDashboard();
+}
+async function deleteCB(name) {
+  if (!confirm(`确定删除熔断器 ${name}？`)) return;
+  await fetch(`${API}/api/circuit-breakers/${name}`, { method: 'DELETE' });
+  fetchDashboard();
+}
+
+// 初始化
+document.addEventListener('DOMContentLoaded', () => {
+  initChart();
+  fetchDashboard();
+  refreshTimer = setInterval(fetchDashboard, 3000);
+});
+</script>
+</body>
+</html>
