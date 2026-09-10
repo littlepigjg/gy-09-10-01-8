@@ -39,10 +39,12 @@ class CircuitBreaker:
         recovery_timeout: int = 30,
         half_open_max_calls: int = 3,
         success_threshold: int = 2,
+        version: str = "stable",
         on_state_change: Optional[Callable] = None,
     ):
         self.service_name = service_name
         self.backend_url = backend_url
+        self.version = version
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.half_open_max_calls = half_open_max_calls
@@ -64,12 +66,41 @@ class CircuitBreaker:
     @property
     def state(self) -> CircuitState:
         with self._lock:
-            # 检查OPEN状态是否超时，自动转为HALF_OPEN
-            if self._state == CircuitState.OPEN and self._last_failure_time:
-                elapsed = time.time() - self._last_failure_time
-                if elapsed >= self.recovery_timeout:
-                    self._transition_to(CircuitState.HALF_OPEN)
+            self._recover_locked()
             return self._state
+
+    def _recover_locked(self):
+        """在持有锁时检查 OPEN 是否到期并进入 HALF_OPEN。"""
+        if self._state == CircuitState.OPEN and self._last_failure_time:
+            elapsed = time.time() - self._last_failure_time
+            if elapsed >= self.recovery_timeout:
+                self._transition_to_locked(CircuitState.HALF_OPEN)
+
+    def can_allow(self) -> bool:
+        """只检查状态；HALF_OPEN 名额在 try_acquire 中原子占用。"""
+        if not self._enabled:
+            return True
+        with self._lock:
+            self._recover_locked()
+            if self._state == CircuitState.CLOSED:
+                return True
+            if self._state == CircuitState.HALF_OPEN:
+                return self._half_open_calls < self.half_open_max_calls
+            return False
+
+    def try_acquire(self) -> bool:
+        """原子完成状态恢复、半开名额占用和在途请求计数。"""
+        with self._lock:
+            if not self._enabled:
+                return True
+            self._recover_locked()
+            if self._state == CircuitState.CLOSED:
+                return True
+            if self._state == CircuitState.HALF_OPEN:
+                if self._half_open_calls < self.half_open_max_calls:
+                    self._half_open_calls += 1
+                    return True
+            return False
 
     def record_success(self):
         """记录成功请求"""
@@ -102,26 +133,15 @@ class CircuitBreaker:
                     self._transition_to(CircuitState.OPEN)
 
     def allow_request(self) -> bool:
-        """检查是否允许请求通过"""
-        if not self._enabled:
-            return True
-
-        current_state = self.state  # 触发超时检查
-
-        if current_state == CircuitState.CLOSED:
-            return True
-        elif current_state == CircuitState.OPEN:
-            return False
-        elif current_state == CircuitState.HALF_OPEN:
-            with self._lock:
-                if self._half_open_calls < self.half_open_max_calls:
-                    self._half_open_calls += 1
-                    return True
-                return False
-        return False
+        """兼容旧接口；新的灰度路径必须使用 try_acquire 避免选择和名额占用竞态。"""
+        return self.try_acquire()
 
     def _transition_to(self, new_state: CircuitState):
-        """状态转换"""
+        with self._lock:
+            self._transition_to_locked(new_state)
+
+    def _transition_to_locked(self, new_state: CircuitState):
+        """状态转换（调用方持有锁）。"""
         old_state = self._state
         self._state = new_state
         self._last_state_change = time.time()
@@ -138,7 +158,13 @@ class CircuitBreaker:
 
         if self._on_state_change:
             try:
-                self._on_state_change(self.service_name, old_state.value, new_state.value)
+                self._on_state_change(
+                    self.service_name,
+                    old_state.value,
+                    new_state.value,
+                    self.version,
+                    self.backend_url,
+                )
             except Exception as e:
                 logger.error(f"状态变更回调异常: {e}")
 
@@ -157,6 +183,7 @@ class CircuitBreaker:
         current_state = self.state  # 触发超时检查
         return {
             "service_name": self.service_name,
+            "version": self.version,
             "backend_url": self.backend_url,
             "state": current_state.value,
             "failure_count": self._failure_count,

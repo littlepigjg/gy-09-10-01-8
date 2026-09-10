@@ -1,6 +1,6 @@
 """数据库模型"""
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, JSON, Index, UniqueConstraint
 from database import Base
 
 
@@ -21,13 +21,13 @@ class RateLimitRule(Base):
 
 
 class CircuitBreakerState(Base):
-    """熔断器状态表"""
+    """熔断器服务配置与聚合状态表"""
     __tablename__ = "circuit_breaker_states"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     service_name = Column(String(255), nullable=False, unique=True, comment="后端服务名称")
-    backend_url = Column(String(500), nullable=False, comment="后端服务地址")
-    state = Column(String(20), nullable=False, default="closed", comment="状态: closed/open/half_open")
+    backend_url = Column(String(500), nullable=False, comment="默认/主后端服务地址")
+    state = Column(String(20), nullable=False, default="closed", comment="聚合状态: closed/open/half_open")
     failure_count = Column(Integer, default=0, comment="连续失败次数")
     success_count = Column(Integer, default=0, comment="半开状态成功次数")
     failure_threshold = Column(Integer, default=5, comment="失败阈值")
@@ -40,6 +40,26 @@ class CircuitBreakerState(Base):
     total_failures = Column(Integer, default=0, comment="总失败数")
     enabled = Column(Boolean, default=True, comment="是否启用")
     created_at = Column(DateTime, default=datetime.now)
+
+
+class CanaryBackend(Base):
+    """同一服务下的灰度后端目标"""
+    __tablename__ = "canary_backends"
+    __table_args__ = (
+        UniqueConstraint("service_name", "version", name="uk_canary_service_version"),
+        Index("idx_canary_service_version", "service_name", "version"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    service_name = Column(String(255), nullable=False, comment="后端服务名称")
+    version = Column(String(100), nullable=False, comment="生效版本")
+    backend_url = Column(String(500), nullable=False, comment="后端服务地址")
+    weight = Column(Integer, nullable=False, default=100, comment="配置权重")
+    effective_weight = Column(Integer, nullable=False, default=100, comment="剔除熔断后端后的实时生效权重")
+    hit_count = Column(Integer, nullable=False, default=0, comment="命中次数")
+    enabled = Column(Boolean, default=True, comment="是否参与灰度")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class RateLimitEvent(Base):
